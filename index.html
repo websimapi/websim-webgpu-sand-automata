@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>WebGPU Sand Automata</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <canvas id="gpuCanvas"></canvas>
+    <div id="ui">
+        <h1>Sand Game (WebGPU)</h1>
+        <p>Parallel Cellular Automata with Atomic Conservation</p>
+        <p class="small">Touch/Click to add sand. 1280x720 Grid.</p>
+        <div id="stats">FPS: <span id="fps">0</span> | Particles: <span id="particleCount">0</span></div>
+    </div>
+    <script type="module" src="main.js"></script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"4c6229722a6346bc8eb5cb0e5eae5d41","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+</html>
