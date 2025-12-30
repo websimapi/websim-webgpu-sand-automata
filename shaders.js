@@ -65,16 +65,30 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // 1. Try Move Down
+    // 1. Try Move Down (with optional double-step for faster falling)
     let idx_down = get_idx(x, down_y);
     let state_down = atomicLoad(&current.cells[idx_down]);
 
+    // Try to fall two cells if both are empty
     if (state_down == 0u) {
-        // Target is empty in current frame. Try to claim in next frame.
-        // atomicCompareExchangeWeak(ptr, compare, value)
+        let down2_y = down_y + 1u;
+        if (down2_y < u.height) {
+            let idx_down2 = get_idx(x, down2_y);
+            let state_down2 = atomicLoad(&current.cells[idx_down2]);
+            if (state_down2 == 0u) {
+                // Both cells below are empty, try to claim the second cell
+                let res2 = atomicCompareExchangeWeak(&next.cells[idx_down2], 0u, state);
+                if (res2.exchanged) {
+                    return;
+                }
+                // If claiming second cell failed, fall back to trying single-step
+            }
+        }
+
+        // Single-step fall if double-step was not possible
         let res = atomicCompareExchangeWeak(&next.cells[idx_down], 0u, state);
         if (res.exchanged) {
-            // Success! We moved.
+            // Success! We moved one cell down.
             return;
         }
         // Failed: Someone else claimed it. Continue to other rules.
