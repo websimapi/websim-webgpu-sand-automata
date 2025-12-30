@@ -12,19 +12,19 @@
         <h1>Sand Game (WebGPU)</h1>
         <p>Parallel Cellular Automata with Atomic Conservation</p>
         <p class="small">Touch/Click to add sand. 1280x720 Grid.</p>
-
-        <div id="controls">
-            <div class="control-row">
-                <label for="brushRange">Brush</label>
-                <input id="brushRange" type="range" min="1" max="25" value="5">
+        
+        <div class="controls">
+            <div class="control-group">
+                <label for="brushSize">Brush Size</label>
+                <input type="range" id="brushSize" min="1" max="50" value="5">
             </div>
-            <div class="control-row">
-                <label for="gravityRange">Gravity</label>
-                <input id="gravityRange" type="range" min="1" max="8" value="2">
+            <div class="control-group">
+                <label for="gravityRange">Sim Speed</label>
+                <input type="range" id="gravityRange" min="1" max="10" value="1">
             </div>
         </div>
 
-        <div id="stats">FPS: <span id="fps">0</span> | Particles: <span id="particleCount">0</span></div>
+        <div id="stats">FPS: <span id="fps">0</span> | Steps: <span id="simSteps">0</span></div>
     </div>
     <script type="module" src="main.js"></script>
     <script>

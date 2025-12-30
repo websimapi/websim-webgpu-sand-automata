@@ -7,7 +7,6 @@ struct Uniforms {
     width: u32,
     height: u32,
     frame: u32,
-    gravity: u32,
 };
 
 @group(0) @binding(0) var<storage, read_write> current: Grid;
@@ -66,36 +65,33 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // 1. Try Move Down with variable gravity-based max fall distance
-    // gravity: 1..8 -> how many cells a grain can try to fall per step
-    let maxFall = clamp(u.gravity, 1u, 8u);
-    var target_y = y;
+    // 1. Try Move Down (with optional double-step for faster falling)
+    let idx_down = get_idx(x, down_y);
+    let state_down = atomicLoad(&current.cells[idx_down]);
 
-    // Scan downward to find the deepest empty cell up to maxFall
-    var step: u32 = 1u;
-    loop {
-        if (step > maxFall) { break; }
-        let ny = y + step;
-        if (ny >= u.height) { break; }
-
-        let idx = get_idx(x, ny);
-        let s = atomicLoad(&current.cells[idx]);
-        if (s == 0u) {
-            target_y = ny;
-        } else {
-            break;
+    // Try to fall two cells if both are empty
+    if (state_down == 0u) {
+        let down2_y = down_y + 1u;
+        if (down2_y < u.height) {
+            let idx_down2 = get_idx(x, down2_y);
+            let state_down2 = atomicLoad(&current.cells[idx_down2]);
+            if (state_down2 == 0u) {
+                // Both cells below are empty, try to claim the second cell
+                let res2 = atomicCompareExchangeWeak(&next.cells[idx_down2], 0u, state);
+                if (res2.exchanged) {
+                    return;
+                }
+                // If claiming second cell failed, fall back to trying single-step
+            }
         }
 
-        step = step + 1u;
-    }
-
-    if (target_y > y) {
-        let idx_target = get_idx(x, target_y);
-        let res = atomicCompareExchangeWeak(&next.cells[idx_target], 0u, state);
+        // Single-step fall if double-step was not possible
+        let res = atomicCompareExchangeWeak(&next.cells[idx_down], 0u, state);
         if (res.exchanged) {
+            // Success! We moved one cell down.
             return;
         }
-        // If claiming failed, continue to diagonals.
+        // Failed: Someone else claimed it. Continue to other rules.
     }
 
     // Randomize Left/Right check order to prevent stacking bias
@@ -157,7 +153,6 @@ struct Uniforms {
     width: u32,
     height: u32,
     frame: u32,
-    gravity: u32,
 };
 
 @group(0) @binding(0) var<storage, read> grid: Grid;

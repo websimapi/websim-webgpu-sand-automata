@@ -6,6 +6,10 @@ const WORKGROUP_SIZE = 16;
 
 const canvas = document.getElementById('gpuCanvas');
 const fpsElem = document.getElementById('fps');
+const simStepsElem = document.getElementById('simSteps');
+const brushSizeInput = document.getElementById('brushSize');
+const gravityInput = document.getElementById('gravityRange');
+
 canvas.width = WIDTH;
 canvas.height = HEIGHT;
 
@@ -19,12 +23,11 @@ let bindGroupInputA, bindGroupInputB;
 
 const MAX_INPUTS = 65536; // Max pixels to update per frame
 
-let frameCount = 0;
+let frameCount = 0;      // Render frames
+let simulationStep = 0;  // Physics steps (accumulates faster if gravity > 1)
 let lastTime = 0;
 let isDrawing = false;
 let inputQueue = []; // Pixels to add sand to
-let brushRadius = 5;
-let gravitySteps = 2; // how many cells a grain can fall per simulation step
 
 async function init() {
     if (!navigator.gpu) {
@@ -66,7 +69,7 @@ function createAssets() {
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
     });
 
-    // Uniforms (Width, Height, Frame, Extra: inputCount or gravitySteps depending on pass)
+    // Uniforms (Width, Height, Frame, InputCount)
     bufferUniforms = device.createBuffer({
         size: 16, // 4 * u32
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -79,7 +82,7 @@ function createAssets() {
     });
 
     // Initial Uniforms
-    device.queue.writeBuffer(bufferUniforms, 0, new Uint32Array([WIDTH, HEIGHT, 0, gravitySteps]));
+    device.queue.writeBuffer(bufferUniforms, 0, new Uint32Array([WIDTH, HEIGHT, 0, 0]));
 }
 
 function createPipelines() {
@@ -192,23 +195,6 @@ function createBindGroups() {
 }
 
 function setupInput() {
-    const brushSlider = document.getElementById('brushRange');
-    const gravitySlider = document.getElementById('gravityRange');
-
-    if (brushSlider) {
-        brushSlider.value = String(brushRadius);
-        brushSlider.addEventListener('input', () => {
-            brushRadius = Math.max(1, Math.min(25, parseInt(brushSlider.value || '5', 10)));
-        });
-    }
-
-    if (gravitySlider) {
-        gravitySlider.value = String(gravitySteps);
-        gravitySlider.addEventListener('input', () => {
-            gravitySteps = Math.max(1, Math.min(8, parseInt(gravitySlider.value || '2', 10)));
-        });
-    }
-
     const addInput = (e) => {
         if (!isDrawing) return;
         const rect = canvas.getBoundingClientRect();
@@ -226,11 +212,14 @@ function setupInput() {
         const x = Math.floor((clientX - rect.left) / rect.width * WIDTH);
         const y = Math.floor((clientY - rect.top) / rect.height * HEIGHT);
 
-        // Brush Size (controlled by UI)
-        const radius = brushRadius;
+        // Brush Size
+        const radius = parseInt(brushSizeInput.value) || 5;
+        const radiusSq = radius * radius;
+        
+        // Optimize loop for larger brushes
         for (let dy = -radius; dy <= radius; dy++) {
             for (let dx = -radius; dx <= radius; dx++) {
-                if (dx*dx + dy*dy <= radius*radius) {
+                if (dx*dx + dy*dy <= radiusSq) {
                     const px = x + dx;
                     const py = y + dy;
                     if (px >= 0 && px < WIDTH && py >= 0 && py < HEIGHT) {
@@ -255,70 +244,95 @@ function setupInput() {
 
 function loop(timestamp) {
     if (timestamp - lastTime >= 1000) {
-        fpsElem.innerText = Math.round(1000 / (timestamp - lastTime) * 60); // Approx
+        fpsElem.innerText = Math.round((frameCount * 1000) / (timestamp - lastTime)); // Average FPS over the second?
+        // Simpler: Just instant FPS
+        // fpsElem.innerText = Math.round(1000 / (timestamp - lastTime)); 
         lastTime = timestamp;
+        frameCount = 0; // Reset for basic counter
     }
-
-    const commandEncoder = device.createCommandEncoder();
-
-    // Determine Buffer pointers
-    // Frame 0: Read A, Write B
-    // Frame 1: Read B, Write A
-    const useAasInput = frameCount % 2 === 0;
     
-    const inputBuffer = useAasInput ? bufferGridA : bufferGridB;
-    const outputBuffer = useAasInput ? bufferGridB : bufferGridA;
-    const simBindGroup = useAasInput ? bindGroupSimA : bindGroupSimB;
-    const clearBindGroupForOutput = useAasInput ? bindGroupClearB : bindGroupClearA;
-    const renderBindGroup = useAasInput ? bindGroupRenderB : bindGroupRenderA; // We render the result (output)
+    // Get Sim Speed (Gravity)
+    const iterations = parseInt(gravityInput.value) || 1;
+    simStepsElem.innerText = simulationStep;
 
-    // 1. Process Input (Write to Input Buffer before Sim)
+    // 1. Process Input (Once per render frame, applied to the current state)
+    // The "Current State" is the buffer that will be read in the FIRST sub-step.
+    // simulationStep 0 (Even): Read A. So we write input to A.
+    // simulationStep 1 (Odd): Read B. So we write input to B.
+    const startUseAasInput = (simulationStep % 2 === 0);
+
     if (inputQueue.length > 0) {
         const uniqueIndices = [...new Set(inputQueue)];
-        inputQueue = []; // Clear queue
+        inputQueue = []; 
 
         const count = Math.min(uniqueIndices.length, MAX_INPUTS);
         
         if (count > 0) {
-            // Upload indices to bufferInput
+            // Upload indices
             const data = new Uint32Array(uniqueIndices.slice(0, count));
             device.queue.writeBuffer(bufferInput, 0, data);
-
-            // Update Input Count Uniform (offset 12 = 3 * 4) for INPUT shader
+            
+            // Update Uniforms for Input
             device.queue.writeBuffer(bufferUniforms, 12, new Uint32Array([count]));
 
+            const commandEncoder = device.createCommandEncoder();
             const pass = commandEncoder.beginComputePass();
             pass.setPipeline(pipelineInput);
-            // We write to inputBuffer (Current State) so sim picks it up immediately
-            pass.setBindGroup(0, useAasInput ? bindGroupInputA : bindGroupInputB);
+            pass.setBindGroup(0, startUseAasInput ? bindGroupInputA : bindGroupInputB);
             pass.dispatchWorkgroups(Math.ceil(count / 64));
             pass.end();
+            device.queue.submit([commandEncoder.finish()]);
         }
     }
 
-    // 2. Clear Output Buffer (The "Claims" grid needs to be empty)
-    {
-        const pass = commandEncoder.beginComputePass();
-        pass.setPipeline(pipelineClear);
-        pass.setBindGroup(0, clearBindGroupForOutput);
-        const workgroups = Math.ceil((WIDTH * HEIGHT) / 256);
-        pass.dispatchWorkgroups(workgroups);
-        pass.end();
+    // 2. Simulation Loop
+    // We run the sim multiple times.
+    // We need to submit commands in separate batches if we want to update the uniform (random seed) in between.
+    // Or we could use a specialized uniform buffer array, but submitting multiple times is easier here.
+
+    for (let i = 0; i < iterations; i++) {
+        const useAasInput = (simulationStep % 2 === 0);
+        const simBindGroup = useAasInput ? bindGroupSimA : bindGroupSimB;
+        const clearBindGroupForOutput = useAasInput ? bindGroupClearB : bindGroupClearA; // Clear the destination
+
+        // Update Frame Uniform for RNG
+        device.queue.writeBuffer(bufferUniforms, 8, new Uint32Array([simulationStep]));
+
+        const commandEncoder = device.createCommandEncoder();
+
+        // Clear Output
+        {
+            const pass = commandEncoder.beginComputePass();
+            pass.setPipeline(pipelineClear);
+            pass.setBindGroup(0, clearBindGroupForOutput);
+            const workgroups = Math.ceil((WIDTH * HEIGHT) / 256);
+            pass.dispatchWorkgroups(workgroups);
+            pass.end();
+        }
+
+        // Run Sim
+        {
+            const pass = commandEncoder.beginComputePass();
+            pass.setPipeline(pipelineSimulation);
+            pass.setBindGroup(0, simBindGroup);
+            pass.dispatchWorkgroups(Math.ceil(WIDTH / 16), Math.ceil(HEIGHT / 16));
+            pass.end();
+        }
+
+        device.queue.submit([commandEncoder.finish()]);
+        simulationStep++;
     }
 
-    // 3. Update Uniforms (Frame count & gravity for SIMULATION shader)
-    device.queue.writeBuffer(bufferUniforms, 8, new Uint32Array([frameCount, gravitySteps]));
+    // 3. Render Result
+    // Render the buffer that was just written to.
+    // If simulationStep just incremented, it is now (Old + 1).
+    // The last write was from (simulationStep - 1).
+    // If (simulationStep - 1) was Even (A->B), we wrote to B. Render B.
+    const lastStep = simulationStep - 1;
+    const lastUseAasInput = (lastStep % 2 === 0);
+    const renderBindGroup = lastUseAasInput ? bindGroupRenderB : bindGroupRenderA;
 
-    // 4. Run Simulation
-    {
-        const pass = commandEncoder.beginComputePass();
-        pass.setPipeline(pipelineSimulation);
-        pass.setBindGroup(0, simBindGroup);
-        pass.dispatchWorkgroups(Math.ceil(WIDTH / 16), Math.ceil(HEIGHT / 16));
-        pass.end();
-    }
-
-    // 5. Render Result
+    const commandEncoder = device.createCommandEncoder();
     {
         const pass = commandEncoder.beginRenderPass({
             colorAttachments: [{
@@ -333,7 +347,6 @@ function loop(timestamp) {
         pass.draw(6);
         pass.end();
     }
-
     device.queue.submit([commandEncoder.finish()]);
 
     frameCount++;
