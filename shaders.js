@@ -206,14 +206,23 @@ struct InputData {
 struct Grid {
     cells: array<atomic<u32>>,
 };
+struct Uniforms {
+    width: u32,
+    height: u32,
+    frame: u32,
+    input_count: u32,
+};
+
 @group(0) @binding(0) var<storage, read> inputs: InputData;
 @group(0) @binding(1) var<storage, read_write> grid: Grid;
+@group(0) @binding(2) var<uniform> u: Uniforms;
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let i = global_id.x;
-    // We can't know the length easily without a uniform or max size.
-    // We'll rely on dispatch size.
+    if (i >= u.input_count) {
+        return;
+    }
     let idx = inputs.indices[i];
     atomicStore(&grid.cells[idx], 1u);
 }

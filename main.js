@@ -1,4 +1,4 @@
-import { SIMULATION_SHADER, RENDER_SHADER, CLEAR_SHADER } from './shaders.js';
+import { SIMULATION_SHADER, RENDER_SHADER, CLEAR_SHADER, INPUT_SHADER } from './shaders.js';
 
 const WIDTH = 1280;
 const HEIGHT = 720;
@@ -10,11 +10,14 @@ canvas.width = WIDTH;
 canvas.height = HEIGHT;
 
 let device, context;
-let pipelineSimulation, pipelineRender, pipelineClear;
-let bufferGridA, bufferGridB, bufferUniforms;
+let pipelineSimulation, pipelineRender, pipelineClear, pipelineInput;
+let bufferGridA, bufferGridB, bufferUniforms, bufferInput;
 let bindGroupSimA, bindGroupSimB; // A->B, B->A
 let bindGroupRenderA, bindGroupRenderB;
 let bindGroupClearA, bindGroupClearB;
+let bindGroupInputA, bindGroupInputB;
+
+const MAX_INPUTS = 65536; // Max pixels to update per frame
 
 let frameCount = 0;
 let lastTime = 0;
@@ -61,25 +64,38 @@ function createAssets() {
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
     });
 
-    // Uniforms (Width, Height, Frame)
+    // Uniforms (Width, Height, Frame, InputCount)
     bufferUniforms = device.createBuffer({
-        size: 16, // 3 * u32 + padding
+        size: 16, // 4 * u32
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     
+    // Input Buffer
+    bufferInput = device.createBuffer({
+        size: MAX_INPUTS * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+
     // Initial Uniforms
-    device.queue.writeBuffer(bufferUniforms, 0, new Uint32Array([WIDTH, HEIGHT, 0]));
+    device.queue.writeBuffer(bufferUniforms, 0, new Uint32Array([WIDTH, HEIGHT, 0, 0]));
 }
 
 function createPipelines() {
     const moduleSim = device.createShaderModule({ code: SIMULATION_SHADER });
     const moduleRender = device.createShaderModule({ code: RENDER_SHADER });
     const moduleClear = device.createShaderModule({ code: CLEAR_SHADER });
+    const moduleInput = device.createShaderModule({ code: INPUT_SHADER });
 
     // Compute Pipeline
     pipelineSimulation = device.createComputePipeline({
         layout: 'auto',
         compute: { module: moduleSim, entryPoint: 'main' },
+    });
+
+    // Input Pipeline
+    pipelineInput = device.createComputePipeline({
+        layout: 'auto',
+        compute: { module: moduleInput, entryPoint: 'main' },
     });
 
     // Render Pipeline
@@ -151,6 +167,26 @@ function createBindGroups() {
         layout: pipelineClear.getBindGroupLayout(0),
         entries: [{ binding: 0, resource: { buffer: bufferGridB } }],
     });
+
+    // Input Bind Groups
+    // Group 0: Inputs(Read), Grid(ReadWrite), Uniforms
+    bindGroupInputA = device.createBindGroup({
+        layout: pipelineInput.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: bufferInput } },
+            { binding: 1, resource: { buffer: bufferGridA } },
+            { binding: 2, resource: { buffer: bufferUniforms } },
+        ],
+    });
+
+    bindGroupInputB = device.createBindGroup({
+        layout: pipelineInput.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: bufferInput } },
+            { binding: 1, resource: { buffer: bufferGridB } },
+            { binding: 2, resource: { buffer: bufferUniforms } },
+        ],
+    });
 }
 
 function setupInput() {
@@ -219,59 +255,25 @@ function loop(timestamp) {
 
     // 1. Process Input (Write to Input Buffer before Sim)
     if (inputQueue.length > 0) {
-        // De-duplicate and write
-        // To be safe and efficient, we can't write thousands of separate calls.
-        // We pack into a typed array.
-        // Max updates per frame limited for performance?
         const uniqueIndices = [...new Set(inputQueue)];
         inputQueue = []; // Clear queue
+
+        const count = Math.min(uniqueIndices.length, MAX_INPUTS);
         
-        // Since writeBuffer takes offset/size, and indices are scattered,
-        // we can't do one writeBuffer.
-        // Optimization: Create a "staging" buffer or compute shader brush.
-        // For simplicity: We will just iterate. If this is slow, we optimize.
-        // Actually, queue.writeBuffer overhead is high.
-        // Better: Upload a list of indices to a separate buffer and run a "Input" compute shader.
-        // For now, let's try a bulk write if possible? No.
-        // Let's use a DataView to write chunks if contiguous? No, sand is scattered.
-        
-        // ALTERNATIVE: Mapped Buffer? No, async.
-        // Given constraints, I'll write a small compute pass for brush?
-        // Let's stick to raw JS writes for now, but limit count.
-        // Actually, if I have 100 pixels, 100 API calls is bad.
-        // Let's use an Input Compute Shader.
-        
-        // ... implementing simplified brush logic directly via buffer upload ...
-        // We will create a temp buffer with indices, and dispatch a "Scatter" shader.
-        if (uniqueIndices.length > 0) {
-             const inputData = new Uint32Array(uniqueIndices);
-             // Create a temporary mapped buffer or use writeBuffer to a reusable input buffer
-             // Reusing a buffer is best.
-             // We need an "InputBuffer"
-             const inputStaging = device.createBuffer({
-                 size: inputData.byteLength,
-                 usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-                 mappedAtCreation: true
-             });
-             new Uint32Array(inputStaging.getMappedRange()).set(inputData);
-             inputStaging.unmap();
-             
-             // We need a pipeline to scatter these into the grid.
-             // Defined inline here to save file space, or added to shaders.
-             // Let's just do it inefficiently for now or assume user won't draw massive blobs per frame.
-             // Actually, for "Sand Game", drawing is key.
-             // Let's try the naive writeBuffer loop but limited.
-             // Better: map the whole buffer? No.
-             
-             // Optimized approach: Update the Input Buffer (Current State)
-             // We create a "Brush Shader" on the fly? No.
-             
-             // I will assume the brush is small enough.
-             // Wait, 1280x720, brush radius 5 = ~80 pixels. 80 calls is okay-ish.
-             for(let idx of uniqueIndices) {
-                 device.queue.writeBuffer(inputBuffer, idx * 4, new Uint32Array([1]));
-             }
-             inputStaging.destroy(); // not used in this path
+        if (count > 0) {
+            // Upload indices to bufferInput
+            const data = new Uint32Array(uniqueIndices.slice(0, count));
+            device.queue.writeBuffer(bufferInput, 0, data);
+
+            // Update Input Count Uniform (offset 12 = 3 * 4)
+            device.queue.writeBuffer(bufferUniforms, 12, new Uint32Array([count]));
+
+            const pass = commandEncoder.beginComputePass();
+            pass.setPipeline(pipelineInput);
+            // We write to inputBuffer (Current State) so sim picks it up immediately
+            pass.setBindGroup(0, useAasInput ? bindGroupInputA : bindGroupInputB);
+            pass.dispatchWorkgroups(Math.ceil(count / 64));
+            pass.end();
         }
     }
 
