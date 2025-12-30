@@ -23,6 +23,8 @@ let frameCount = 0;
 let lastTime = 0;
 let isDrawing = false;
 let inputQueue = []; // Pixels to add sand to
+let brushRadius = 5;
+let gravitySteps = 2; // how many cells a grain can fall per simulation step
 
 async function init() {
     if (!navigator.gpu) {
@@ -64,7 +66,7 @@ function createAssets() {
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
     });
 
-    // Uniforms (Width, Height, Frame, InputCount)
+    // Uniforms (Width, Height, Frame, Extra: inputCount or gravitySteps depending on pass)
     bufferUniforms = device.createBuffer({
         size: 16, // 4 * u32
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -77,7 +79,7 @@ function createAssets() {
     });
 
     // Initial Uniforms
-    device.queue.writeBuffer(bufferUniforms, 0, new Uint32Array([WIDTH, HEIGHT, 0, 0]));
+    device.queue.writeBuffer(bufferUniforms, 0, new Uint32Array([WIDTH, HEIGHT, 0, gravitySteps]));
 }
 
 function createPipelines() {
@@ -190,6 +192,23 @@ function createBindGroups() {
 }
 
 function setupInput() {
+    const brushSlider = document.getElementById('brushRange');
+    const gravitySlider = document.getElementById('gravityRange');
+
+    if (brushSlider) {
+        brushSlider.value = String(brushRadius);
+        brushSlider.addEventListener('input', () => {
+            brushRadius = Math.max(1, Math.min(25, parseInt(brushSlider.value || '5', 10)));
+        });
+    }
+
+    if (gravitySlider) {
+        gravitySlider.value = String(gravitySteps);
+        gravitySlider.addEventListener('input', () => {
+            gravitySteps = Math.max(1, Math.min(8, parseInt(gravitySlider.value || '2', 10)));
+        });
+    }
+
     const addInput = (e) => {
         if (!isDrawing) return;
         const rect = canvas.getBoundingClientRect();
@@ -207,8 +226,8 @@ function setupInput() {
         const x = Math.floor((clientX - rect.left) / rect.width * WIDTH);
         const y = Math.floor((clientY - rect.top) / rect.height * HEIGHT);
 
-        // Brush Size
-        const radius = 5;
+        // Brush Size (controlled by UI)
+        const radius = brushRadius;
         for (let dy = -radius; dy <= radius; dy++) {
             for (let dx = -radius; dx <= radius; dx++) {
                 if (dx*dx + dy*dy <= radius*radius) {
@@ -265,7 +284,7 @@ function loop(timestamp) {
             const data = new Uint32Array(uniqueIndices.slice(0, count));
             device.queue.writeBuffer(bufferInput, 0, data);
 
-            // Update Input Count Uniform (offset 12 = 3 * 4)
+            // Update Input Count Uniform (offset 12 = 3 * 4) for INPUT shader
             device.queue.writeBuffer(bufferUniforms, 12, new Uint32Array([count]));
 
             const pass = commandEncoder.beginComputePass();
@@ -287,8 +306,8 @@ function loop(timestamp) {
         pass.end();
     }
 
-    // 3. Update Uniforms (Frame count)
-    device.queue.writeBuffer(bufferUniforms, 8, new Uint32Array([frameCount]));
+    // 3. Update Uniforms (Frame count & gravity for SIMULATION shader)
+    device.queue.writeBuffer(bufferUniforms, 8, new Uint32Array([frameCount, gravitySteps]));
 
     // 4. Run Simulation
     {
